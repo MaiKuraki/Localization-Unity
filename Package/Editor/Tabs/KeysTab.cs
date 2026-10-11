@@ -24,8 +24,6 @@ namespace PicoShot.Localization.Editor.Tabs
         private const string ElementControlPrefix = "Keys.Element.";
         private const float RowPadding = 6f;
         private const float FieldMinHeight = 20f;
-        private const float ArrayIndexWidth = 24f;
-        private const float ArrayButtonWidth = 20f;
         private const float IconButtonSize = 20f;
 
         private static readonly string[] KeyTypeLabels = { "String", "Array" };
@@ -38,9 +36,8 @@ namespace PicoShot.Localization.Editor.Tabs
         private bool _pendingDelete;
         private bool _isTranslating;
         private float _keysListViewportHeight;
-        private float _detailsWidth;
         private string _pendingFocusControl;
-        private string _arrayTargetLanguage;
+        private readonly HashSet<string> _expandedElements = new HashSet<string>();
 
         private string _lastValueControl;
         private string _lastValueKey;
@@ -695,13 +692,6 @@ namespace PicoShot.Localization.Editor.Tabs
                 Data.KeyDetailsScroll = EditorGUILayout.BeginScrollView(Data.KeyDetailsScroll,
                     GUILayout.ExpandHeight(true), GUILayout.MaxHeight(float.MaxValue));
                 {
-                    var probe = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true));
-                    if (Event.current.type == EventType.Repaint && probe.width > 1f && Mathf.Abs(probe.width - _detailsWidth) > 0.5f)
-                    {
-                        _detailsWidth = probe.width;
-                        Editor.Repaint();
-                    }
-
                     if (isArray)
                         DrawArrayEditor(key, keyData);
                     else
@@ -978,30 +968,9 @@ namespace PicoShot.Localization.Editor.Tabs
         private void DrawArrayEditor(string key, Dictionary<string, object> keyData)
         {
             string defaultLang = DefaultLanguage;
-            var targets = Data.GetLanguagesDefaultFirst().Where(lang => lang != defaultLang).ToList();
-            if (targets.Count > 0 && (_arrayTargetLanguage == null || !targets.Contains(_arrayTargetLanguage)))
-                _arrayTargetLanguage = targets[0];
-            string target = targets.Count > 0 ? _arrayTargetLanguage : null;
-
+            var languages = Data.GetLanguagesDefaultFirst().ToList();
             var source = keyData.TryGetValue(defaultLang, out var sourceValue) ? sourceValue as List<string> : null;
-            var targetList = target != null && keyData.TryGetValue(target, out var targetValue) ? targetValue as List<string> : null;
             int count = source?.Count ?? LanguageEditorData.ConvertToList(Data.GetFirstValue(key))?.Count ?? 0;
-
-            if (target != null)
-                DrawArrayTargetSelector(key, targets, target, source);
-
-            float buttonsWidth = ArrayButtonWidth * 3f;
-            float available = Mathf.Max(160f, (_detailsWidth > 1f ? _detailsWidth : 400f) - ArrayIndexWidth - buttonsWidth - 28f);
-            float columnWidth = target != null ? (available - 6f) * 0.5f : available;
-
-            EditorGUILayout.BeginHorizontal();
-            {
-                GUILayout.Space(ArrayIndexWidth + 4f);
-                GUILayout.Label($"{LanguageDefinitions.GetDisplayName(defaultLang)} (source)", EditorStyles.miniBoldLabel, GUILayout.Width(columnWidth));
-                if (target != null)
-                    GUILayout.Label(LanguageDefinitions.GetDisplayName(target), EditorStyles.miniBoldLabel, GUILayout.Width(columnWidth));
-            }
-            EditorGUILayout.EndHorizontal();
 
             if (count == 0)
                 GUILayout.Label("No elements yet. Use + Element to add one.", Styles.EmptyState);
@@ -1011,56 +980,58 @@ namespace PicoShot.Localization.Editor.Tabs
             for (int i = 0; i < count; i++)
             {
                 string sourceText = source != null && i < source.Count ? source[i] ?? "" : "";
-                string targetText = targetList != null && i < targetList.Count ? targetList[i] ?? "" : "";
+                string foldKey = $"{key}|{i}";
+                bool expanded = _expandedElements.Contains(foldKey);
 
-                EditorGUILayout.BeginHorizontal();
+                var headerRect = GUILayoutUtility.GetRect(0f, 22f, GUILayout.ExpandWidth(true));
+                Styles.DrawRowBackground(headerRect, 0, false);
+
+                float right = headerRect.xMax - 2f;
+                var removeRect = new Rect(right - IconButtonSize, headerRect.y + 2f, IconButtonSize, headerRect.height - 4f);
+                var downRect = new Rect(removeRect.x - IconButtonSize, removeRect.y, IconButtonSize, removeRect.height);
+                var upRect = new Rect(downRect.x - IconButtonSize, removeRect.y, IconButtonSize, removeRect.height);
+
+                using (new EditorGUI.DisabledScope(i == 0))
                 {
-                    GUILayout.Label(i.ToString(), Styles.MutedLabel, GUILayout.Width(ArrayIndexWidth), GUILayout.Height(FieldMinHeight));
-
-                    string newSource = DrawTextEditor($"{ElementControlPrefix}{i}.Source", sourceText, "Source text", GUILayout.Width(columnWidth));
-                    if (newSource != sourceText)
-                        SetElementValue(key, defaultLang, i, newSource);
-
-                    if (target != null)
+                    if (GUI.Button(upRect, new GUIContent("↑", "Move up"), EditorStyles.miniButtonLeft))
                     {
-                        string newTarget = DrawTextEditor($"{ElementControlPrefix}{i}.Target", targetText, "Not translated", GUILayout.Width(columnWidth));
-                        if (newTarget != targetText)
-                            SetElementValue(key, target, i, newTarget);
-                    }
-
-                    using (new EditorGUI.DisabledScope(i == 0))
-                    {
-                        if (GUILayout.Button(new GUIContent("↑", "Move up"), EditorStyles.miniButtonLeft, GUILayout.Width(ArrayButtonWidth)))
-                        {
-                            moveFrom = i;
-                            moveTo = i - 1;
-                        }
-                    }
-                    using (new EditorGUI.DisabledScope(i == count - 1))
-                    {
-                        if (GUILayout.Button(new GUIContent("↓", "Move down"), EditorStyles.miniButtonMid, GUILayout.Width(ArrayButtonWidth)))
-                        {
-                            moveFrom = i;
-                            moveTo = i + 1;
-                        }
-                    }
-                    if (GUILayout.Button(new GUIContent("×", $"Remove element ({ActionKeyName}+Z to undo)"), EditorStyles.miniButtonRight, GUILayout.Width(ArrayButtonWidth)))
-                        removeIndex = i;
-                }
-                EditorGUILayout.EndHorizontal();
-
-                if (target != null && !string.IsNullOrWhiteSpace(sourceText) && !string.IsNullOrWhiteSpace(targetText))
-                {
-                    string issue = McpTextChecks.FindMismatch(sourceText, targetText);
-                    if (issue != null)
-                    {
-                        var issueRect = GUILayoutUtility.GetRect(0f, 18f, GUILayout.ExpandWidth(true));
-                        issueRect.xMin += ArrayIndexWidth + columnWidth + 10f;
-                        DrawIssue(issueRect, issue);
+                        moveFrom = i;
+                        moveTo = i - 1;
                     }
                 }
+                using (new EditorGUI.DisabledScope(i == count - 1))
+                {
+                    if (GUI.Button(downRect, new GUIContent("↓", "Move down"), EditorStyles.miniButtonMid))
+                    {
+                        moveFrom = i;
+                        moveTo = i + 1;
+                    }
+                }
+                if (GUI.Button(removeRect, new GUIContent("×", $"Remove element ({ActionKeyName}+Z to undo)"), EditorStyles.miniButtonRight))
+                    removeIndex = i;
 
-                EditorGUILayout.Space(2);
+                var foldRect = new Rect(headerRect.x + 4f, headerRect.y, Mathf.Max(0f, upRect.x - headerRect.x - 8f), headerRect.height);
+                string title = expanded || sourceText.Length == 0 ? $"Element {i}" : $"Element {i}   \"{sourceText.Replace('\n', ' ')}\"";
+                bool newExpanded = EditorGUI.Foldout(foldRect, expanded, new GUIContent(title, title), true);
+                if (newExpanded != expanded)
+                {
+                    if (newExpanded) _expandedElements.Add(foldKey);
+                    else _expandedElements.Remove(foldKey);
+                }
+
+                if (newExpanded)
+                {
+                    EditorGUILayout.Space(2);
+                    EditorGUILayout.BeginHorizontal();
+                    GUILayout.Space(12f);
+                    EditorGUILayout.BeginVertical();
+                    foreach (var lang in languages)
+                        DrawElementField(key, keyData, lang, lang == defaultLang, i, sourceText);
+                    EditorGUILayout.EndVertical();
+                    EditorGUILayout.EndHorizontal();
+                }
+
+                EditorGUILayout.Space(4);
             }
 
             EditorGUILayout.Space(4);
@@ -1085,6 +1056,11 @@ namespace PicoShot.Localization.Editor.Tabs
                 Data.History.Record("Move Array Element", key);
                 Data.MoveArrayElement(key, moveFrom, moveTo);
                 GUIUtility.keyboardControl = 0;
+
+                bool fromExpanded = _expandedElements.Remove($"{key}|{moveFrom}");
+                bool toExpanded = _expandedElements.Remove($"{key}|{moveTo}");
+                if (fromExpanded) _expandedElements.Add($"{key}|{moveTo}");
+                if (toExpanded) _expandedElements.Add($"{key}|{moveFrom}");
             }
             else if (removeIndex >= 0)
             {
@@ -1095,35 +1071,26 @@ namespace PicoShot.Localization.Editor.Tabs
             }
         }
 
-        private void DrawArrayTargetSelector(string key, List<string> targets, string target, List<string> source)
+        /// <summary>
+        /// One language of one array element, drawn like a string key's language field.
+        /// </summary>
+        private void DrawElementField(string key, Dictionary<string, object> keyData, string lang, bool isDefault, int index, string sourceText)
         {
-            EditorGUILayout.BeginHorizontal();
-            {
-                GUILayout.Label("Translate into", Styles.MutedLabel, GUILayout.Width(80));
+            var list = keyData.TryGetValue(lang, out var value) ? value as List<string> : null;
+            string text = list != null && index < list.Count ? list[index] ?? "" : "";
+            string issue = !isDefault && sourceText.Length > 0 && text.Length > 0 ? McpTextChecks.FindMismatch(sourceText, text) : null;
 
-                int index = targets.IndexOf(target);
-                var names = targets.Select(lang => $"{LanguageDefinitions.GetDisplayName(lang)} ({lang})").ToArray();
-                int newIndex = EditorGUILayout.Popup(index, names, GUILayout.MaxWidth(220));
-                if (newIndex != index)
-                {
-                    _arrayTargetLanguage = targets[newIndex];
-                    GUIUtility.keyboardControl = 0;
-                }
+            DrawLanguageFieldHeader(lang, isDefault, issue, text.Length,
+                canTranslate: !string.IsNullOrWhiteSpace(sourceText), hasText: false,
+                onTranslate: text.Length == 0 ? () => TranslateMissing(key, lang) : (Action)null,
+                onExpand: () => OpenValueEditor(key, lang, index));
 
-                bool sourceEmpty = source == null || source.All(string.IsNullOrWhiteSpace);
-                bool translated = Data.IsTranslated(key, target);
-                using (new EditorGUI.DisabledScope(_isTranslating || sourceEmpty || translated))
-                {
-                    var content = new GUIContent($"Translate {LanguageDefinitions.GetDisplayName(target)}",
-                        sourceEmpty ? "Add source text first" : $"Fill empty elements with {Data.ActiveTranslationProvider}");
-                    if (GUILayout.Button(content, EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
-                        TranslateMissing(key, target);
-                }
+            string newText = DrawTextEditor($"{ElementControlPrefix}{index}.{lang}", text,
+                isDefault ? "Source text" : "Not translated", GUILayout.ExpandWidth(true));
+            if (newText != text)
+                SetElementValue(key, lang, index, newText);
 
-                GUILayout.FlexibleSpace();
-            }
-            EditorGUILayout.EndHorizontal();
-            EditorGUILayout.Space(4);
+            EditorGUILayout.Space(6);
         }
 
         /// <summary>
@@ -1200,11 +1167,12 @@ namespace PicoShot.Localization.Editor.Tabs
             }
             else if (control != null && control.StartsWith(ElementControlPrefix, StringComparison.Ordinal))
             {
-                var parts = control.Substring(ElementControlPrefix.Length).Split('.');
-                if (parts.Length == 2 && int.TryParse(parts[0], out int index))
+                string rest = control.Substring(ElementControlPrefix.Length);
+                int dot = rest.IndexOf('.');
+                if (dot > 0 && int.TryParse(rest.Substring(0, dot), out int index))
                 {
-                    string lang = parts[1] == "Target" && _arrayTargetLanguage != null ? _arrayTargetLanguage : defaultLang;
-                    OpenValueEditor(key, lang, index);
+                    string lang = rest.Substring(dot + 1);
+                    OpenValueEditor(key, Data.LanguageCodes.Contains(lang) ? lang : defaultLang, index);
                     return true;
                 }
             }
